@@ -1,4 +1,5 @@
 from collections import defaultdict
+import re
 import warnings
 import os
 import logging
@@ -10,6 +11,8 @@ from twisted.internet.error import ConnectionRefusedError
 
 
 __version__ = '1.0.2'
+
+uuid4hex = re.compile('[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}\Z', re.I)
 
 
 class CrawleraMiddleware(object):
@@ -23,8 +26,6 @@ class CrawleraMiddleware(object):
     preserve_delay = False
 
     _settings = [
-        ('user', str),
-        ('pass', str),
         ('url', str),
         ('maxbans', int),
         ('download_timeout', int),
@@ -36,6 +37,7 @@ class CrawleraMiddleware(object):
         self.job_id = os.environ.get('SCRAPY_JOB')
         self._bans = defaultdict(int)
         self._saved_delays = defaultdict(lambda: None)
+        self.identity = ''
 
     @classmethod
     def from_crawler(cls, crawler):
@@ -47,6 +49,19 @@ class CrawleraMiddleware(object):
         self.enabled = self.is_enabled(spider)
         if not self.enabled:
             return
+        apikey = self._get_setting_value(spider, 'apikey', str)
+        if apikey:
+            if not uuid4hex.match(apikey):
+                logging.warning(
+                    "Invalid CRAWLERA_APIKEY (%s)" % apikey)
+                return
+            self.identity = apikey
+            setattr(self, 'pass', "")
+        else:
+            setattr(self, 'identity',
+                    self._get_setting_value(spider, 'user', str))
+            setattr(self, 'pass',
+                    self._get_setting_value(spider, 'pass', str))
 
         for k, type_ in self._settings:
             setattr(self, k, self._get_setting_value(spider, k, type_))
@@ -54,7 +69,8 @@ class CrawleraMiddleware(object):
             self.url += '?noconnect'
 
         self._proxyauth = self.get_proxyauth(spider)
-        logging.info("Using crawlera at %s (user: %s)" % (self.url, self.user))
+        logging.info("Using crawlera at %s (identity: %s)" % (
+            self.url, self.identity))
 
         if not self.preserve_delay:
             # Setting spider download delay to 0 to get maximum crawl rate
@@ -113,7 +129,7 @@ class CrawleraMiddleware(object):
 
     def get_proxyauth(self, spider):
         """Hook to compute Proxy-Authorization header by custom rules."""
-        return basic_auth_header(self.user, getattr(self, 'pass'))
+        return basic_auth_header(self.identity, getattr(self, 'pass'))
 
     def process_request(self, request, spider):
         if self._is_enabled_for_request(request):
